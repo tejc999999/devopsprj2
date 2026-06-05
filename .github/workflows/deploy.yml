@@ -34,7 +34,6 @@ jobs:
 
     # --- 【ステップ3: JARファイルのビルド】 ---
     - name: Build with Maven
-
       # ./mvnw を使ってテストをスキップしながらクリーンビルドを行い、JARファイルを生成します
       run: |
           chmod +x mvnw
@@ -103,6 +102,8 @@ jobs:
     - name: Revoke Security Group Ingress (Close SSH)
       # 「if: always()」を付けることで、途中のファイル転送や起動コマンドがエラーで失敗した場合でも、この閉める処理だけは絶対に強制実行させます
       if: always()
+      env:
+        AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
       run: |
         # 先ほど一時的に許可したGitHub ActionsのIPアドレスのアクセス権限を、セキュリティグループから完全に消去します
         aws ec2 revoke-security-group-ingress \
