@@ -58,8 +58,8 @@ jobs:
     # --- 【★追加ステップC: EC2のセキュリティグループでポート22（SSH）を一瞬だけ開放】 ---
     - name: Authorize Security Group Ingress (Open SSH)
 
-#      env:
-#        AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }} # ★追加
+      env:
+        AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }} # ★追加
 
       run: |
         # AWSのコマンドを使って、先ほど取得したGitHubのIPアドレス（/32）からのSSH接続を一時的に許可します
