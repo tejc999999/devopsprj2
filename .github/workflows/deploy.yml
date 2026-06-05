@@ -1,0 +1,103 @@
+# この自動化処理（ワークフロー）全体に付ける名前です
+name: Direct Deploy to Amazon EC2
+
+# この処理を「いつ実行するか（トリガー）」を決める設定です
+on:
+  # コードが GitHub に「push（プッシュ）」されたときを指定しています
+  push:
+    # 対象となるブランチを「main」ブランチに限定しています
+    branches: [ "main" ]
+
+# 具体的に実行する作業（ジョブ）の塊をここに定義します
+jobs:
+  # 「deploy」という名前のジョブを定義しています
+  deploy:
+    # この作業を実行するクラウド上の仮想パソコンのOSとして「最新のUbuntu」を指定しています
+    runs-on: ubuntu-latest
+    
+    # 仮想パソコン（Ubuntu）上で順番に実行する具体的なステップ（手順）です
+    steps:
+    
+    # --- 【ステップ1: コードの取得】 ---
+    - name: Checkout code
+      # GitHub公式の「リポジトリのコードをUbuntu内にダウンロードする」共通パーツを使います
+      uses: actions/checkout@v4
+
+    # --- 【ステップ2: Java環境の構築】 ---
+    - name: Set up JDK 21
+      # 「Javaの環境をセットアップする」ための公式共通パーツを使います
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: maven
+
+    # --- 【ステップ3: JARファイルのビルド】 ---
+    - name: Build with Maven
+      # ./mvnw を使ってテストをスキップしながらクリーンビルドを行い、JARファイルを生成します
+      run: ./mvnw clean package -DskipTests=true
+
+    # --- 【★追加ステップA: GitHub Actions側の現在のパブリックIPアドレスを取得】 ---
+    - name: Get GitHub Actions Public IP
+      id: ip
+      run: |
+        # AmazonのIP確認サービスを利用して、この実行環境のIPアドレスを取得し、後ろのステップで使えるように記憶します
+        echo "public_id=$(curl -s https://checkip.amazonaws.com)" >> $GITHUB_OUTPUT
+
+    # --- 【★追加ステップB: AWS CLIを使うための認証設定】 ---
+    - name: Configure AWS Credentials
+      # AWS公式の認証用パーツを使い、GitHubのSecretsからAWSの鍵を読み込んでセットします
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    # --- 【★追加ステップC: EC2のセキュリティグループでポート22（SSH）を一瞬だけ開放】 ---
+    - name: Authorize Security Group Ingress (Open SSH)
+      run: |
+        # AWSのコマンドを使って、先ほど取得したGitHubのIPアドレス（/32）からのSSH接続を一時的に許可します
+        aws ec2 authorize-security-group-ingress \
+          --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+          --protocol tcp \
+          --port 22 \
+          --cidr ${{ steps.ip.outputs.public_id }}/32
+
+    # --- 【ステップ4: EC2へのファイル転送】 ---
+    - name: Copy JAR and Script to EC2
+      # appleboy氏の「SCP経由で安全にファイルを転送する」外部パーツを使います
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        # ※認証用の鍵のSecret名が元のままであることを確認してください（例: EC2_SSH_KEY）
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: 22
+        source: "target/*.jar,scripts/deploy.sh"
+        target: "/home/ec2-user/app"
+        strip_components: 0
+
+    # --- 【ステップ5: EC2での起動コマンド実行】 ---
+    - name: Execute Remote SSH Commands
+      # appleboy氏の「EC2にSSHで入り、直接コマンドを遠隔実行する」外部パーツを使います
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: 22
+        script: |
+          chmod +x /home/ec2-user/app/scripts/deploy.sh
+          /home/ec2-user/app/scripts/deploy.sh
+
+    # --- 【★追加ステップD: 【最重要】何があっても必ずセキュリティグループの鍵を閉める】 ---
+    - name: Revoke Security Group Ingress (Close SSH)
+      # 「if: always()」を付けることで、途中のファイル転送や起動コマンドがエラーで失敗した場合でも、この閉める処理だけは絶対に強制実行させます
+      if: always()
+      run: |
+        # 先ほど一時的に許可したGitHub ActionsのIPアドレスのアクセス権限を、セキュリティグループから完全に消去します
+        aws ec2 revoke-security-group-ingress \
+          --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+          --protocol tcp \
+          --port 22 \
+          --cidr ${{ steps.ip.outputs.public_id }}/32
